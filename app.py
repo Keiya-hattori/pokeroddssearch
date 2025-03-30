@@ -10,7 +10,7 @@ import re
 JST = pytz.timezone('Asia/Tokyo')
 
 # キャッシュデータを保持する関数
-@st.cache_data(ttl=1800)  # 30分（1800秒）間キャッシュを保持
+@st.cache_data(ttl=86400)  # 1日（86400秒）間キャッシュを保持
 def fetch_tournament_data(date_str, page, max_details):
     """
     トーナメント情報を取得してキャッシュする
@@ -249,55 +249,76 @@ def main():
     if last_updated:
         elapsed = datetime.now() - last_updated
         st.info(f"最終更新: {last_updated.strftime('%H:%M:%S')} ({int(elapsed.total_seconds())}秒前)")
-    
-    # データ取得ボタン - 強制更新フラグを設定
+
+    # データ取得フラグを初期化
+    should_fetch_data = False
     force_refresh = False
-    if st.button("トーナメント情報を更新"):
-        st.session_state.last_updated = datetime.now()
-        force_refresh = True
-        st.session_state.all_tournaments = {}  # リセット
-    
-    # ページが変更された場合も処理が必要
+
+    # 初回アクセス判定
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+        # 初回メッセージを表示
+        st.info("「すべてのページを取得」ボタンを押して本日開催するすべてのトナメデータを取得してください")
+    else:
+        # データ取得ボタンが押された場合
+        if st.button("トーナメント情報を更新"):
+            st.session_state.last_updated = datetime.now()
+            should_fetch_data = True
+            force_refresh = True
+            st.session_state.all_tournaments = {}  # リセット
+
+    # ページ変更の検出
     page_changed = st.session_state.prev_page != st.session_state.current_page
     if page_changed:
         st.session_state.prev_page = st.session_state.current_page
-    
-    # データ取得（キャッシュ対応）
+        should_fetch_data = True  # ページ変更時にもデータ取得が必要
+
+    # データ取得処理（条件付き）
     tournaments = None
     pagination_info = None
-    
-    with st.spinner(f"データを取得中... (ページ {st.session_state.current_page + 1})"):
-        try:
-            # 強制更新、初回表示、またはページ変更のときキャッシュをクリア
-            if force_refresh:
-                st.cache_data.clear()
-            
-            # データ取得
-            cache_key = f"{date_str}_{st.session_state.current_page}_{max_details}"
-            
-            # セッションステートにキャッシュがあればそれを使用
-            if cache_key in st.session_state and not force_refresh and not page_changed:
-                tournaments, pagination_info, processing_time = st.session_state[cache_key]
-            else:
-                # キャッシュがないか、強制更新かページ変更の場合は取得
-                tournaments, pagination_info, processing_time = fetch_tournament_data(
-                    date_str, 
-                    st.session_state.current_page, 
-                    max_details
-                )
-                # セッションにキャッシュ
-                st.session_state[cache_key] = (tournaments, pagination_info, processing_time)
-            
-            # 全体表示用にデータを蓄積
-            if tournaments:
-                page_key = f"page_{st.session_state.current_page}"
-                st.session_state.all_tournaments[page_key] = tournaments
-            
-        except Exception as e:
-            st.error(f"データの取得に失敗しました: {str(e)}")
-            st.error("しばらく待ってから再試行してください。")
-            return
-    
+    processing_time = 0
+
+    # 初期化済みで、かつデータ取得が必要な場合のみ処理
+    if 'initialized' in st.session_state and (should_fetch_data or 'tournaments' not in st.session_state):
+        with st.spinner(f"データを取得中... (ページ {st.session_state.current_page + 1})"):
+            try:
+                # 強制更新時はキャッシュをクリア
+                if force_refresh:
+                    st.cache_data.clear()
+                
+                # データ取得
+                cache_key = f"{date_str}_{st.session_state.current_page}_{max_details}"
+                
+                # セッションステートにキャッシュがあればそれを使用
+                if cache_key in st.session_state and not force_refresh and not page_changed:
+                    tournaments, pagination_info, processing_time = st.session_state[cache_key]
+                else:
+                    # キャッシュがないか、強制更新かページ変更の場合は取得
+                    tournaments, pagination_info, processing_time = fetch_tournament_data(
+                        date_str, 
+                        st.session_state.current_page, 
+                        max_details
+                    )
+                    # セッションにキャッシュ
+                    st.session_state[cache_key] = (tournaments, pagination_info, processing_time)
+                
+                # 全体表示用にデータを蓄積
+                if tournaments:
+                    page_key = f"page_{st.session_state.current_page}"
+                    st.session_state.all_tournaments[page_key] = tournaments
+                    
+                # セッションに保存
+                st.session_state.tournaments = tournaments
+                st.session_state.pagination_info = pagination_info
+                
+            except Exception as e:
+                st.error(f"データの取得に失敗しました: {str(e)}")
+    else:
+        # 既存のデータがあれば使用
+        if 'tournaments' in st.session_state:
+            tournaments = st.session_state.tournaments
+            pagination_info = st.session_state.pagination_info
+
     # キャッシュ有効期限の表示
     if 'last_updated' in st.session_state:
         cache_expire = st.session_state.last_updated + timedelta(minutes=10)
@@ -314,8 +335,10 @@ def main():
     if all_collected:
         st.success(f"現在 {len(st.session_state.all_tournaments)} ページ分（計 {len(all_collected)} 件）のデータを収集済み")
     
-    # 「すべてのページを取得」ボタン
-    if pagination_info and st.button("すべてのページを取得"):
+    # 「すべてのページを取得（キャッシュを更新）」ボタン
+    if pagination_info and st.button("すべてのページを取得（キャッシュを更新）"):
+        # キャッシュをクリア
+        st.cache_data.clear()
         with st.spinner("全ページのデータを取得中..."):
             total_pages = pagination_info.get('total_pages', 1)
             for page in range(total_pages):
