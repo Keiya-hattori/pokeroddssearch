@@ -249,112 +249,60 @@ def main():
     if last_updated:
         elapsed = datetime.now() - last_updated
         st.info(f"最終更新: {last_updated.strftime('%H:%M:%S')} ({int(elapsed.total_seconds())}秒前)")
-
-    # データ取得フラグを初期化
-    should_fetch_data = False
-    force_refresh = False
-
-    # 初回アクセス判定
+    
+    # 初回データ取得を行わない
     if 'initialized' not in st.session_state:
         st.session_state.initialized = True
         # 初回メッセージを表示
-        st.info("「すべてのページを取得」ボタンを押して本日開催するすべてのトナメデータを取得してください")
-    else:
-        # データ取得ボタンが押された場合
-        if st.button("トーナメント情報を更新"):
-            st.session_state.last_updated = datetime.now()
-            should_fetch_data = True
-            force_refresh = True
-            st.session_state.all_tournaments = {}  # リセット
-
-    # ページ変更の検出
+        st.info("「すべてのページを取得」ボタンを押してデータを取得してください")
+    
+    # ページが変更された場合も処理が必要
     page_changed = st.session_state.prev_page != st.session_state.current_page
     if page_changed:
         st.session_state.prev_page = st.session_state.current_page
-        should_fetch_data = True  # ページ変更時にもデータ取得が必要
-
-    # データ取得処理（条件付き）
+    
+    # データ取得（キャッシュ対応）
     tournaments = None
     pagination_info = None
-    processing_time = 0
-
-    # 初期化済みで、かつデータ取得が必要な場合のみ処理
-    if 'initialized' in st.session_state and (should_fetch_data or 'tournaments' not in st.session_state):
-        with st.spinner(f"データを取得中... (ページ {st.session_state.current_page + 1})"):
-            try:
-                # 強制更新時はキャッシュをクリア
-                if force_refresh:
-                    st.cache_data.clear()
-                
-                # データ取得
-                cache_key = f"{date_str}_{st.session_state.current_page}_{max_details}"
-                
-                # セッションステートにキャッシュがあればそれを使用
-                if cache_key in st.session_state and not force_refresh and not page_changed:
-                    tournaments, pagination_info, processing_time = st.session_state[cache_key]
-                else:
-                    # キャッシュがないか、強制更新かページ変更の場合は取得
-                    tournaments, pagination_info, processing_time = fetch_tournament_data(
-                        date_str, 
-                        st.session_state.current_page, 
-                        max_details
-                    )
-                    # セッションにキャッシュ
-                    st.session_state[cache_key] = (tournaments, pagination_info, processing_time)
-                
-                # 全体表示用にデータを蓄積
-                if tournaments:
-                    page_key = f"page_{st.session_state.current_page}"
-                    st.session_state.all_tournaments[page_key] = tournaments
-                    
-                # セッションに保存
-                st.session_state.tournaments = tournaments
-                st.session_state.pagination_info = pagination_info
-                
-            except Exception as e:
-                st.error(f"データの取得に失敗しました: {str(e)}")
-    else:
-        # 既存のデータがあれば使用
-        if 'tournaments' in st.session_state:
-            tournaments = st.session_state.tournaments
-            pagination_info = st.session_state.pagination_info
-
-    # キャッシュ有効期限の表示
-    if 'last_updated' in st.session_state:
-        cache_expire = st.session_state.last_updated + timedelta(minutes=10)
-        remaining = cache_expire - datetime.now()
-        if remaining.total_seconds() > 0:
-            minutes, seconds = divmod(int(remaining.total_seconds()), 60)
-            st.caption(f"キャッシュ有効期限: あと{minutes}分{seconds}秒")
     
-    # 全ページデータの集計
+    # 全ページデータの集計を初期化
     all_collected = []
-    for page_data in st.session_state.all_tournaments.values():
-        all_collected.extend(page_data)
-    
-    if all_collected:
-        st.success(f"現在 {len(st.session_state.all_tournaments)} ページ分（計 {len(all_collected)} 件）のデータを収集済み")
     
     # 「すべてのページを取得（キャッシュを更新）」ボタン
-    if pagination_info and st.button("すべてのページを取得（キャッシュを更新）"):
+    if st.button("すべてのページを取得（キャッシュを更新）"):
         # キャッシュをクリア
         st.cache_data.clear()
         with st.spinner("全ページのデータを取得中..."):
-            total_pages = pagination_info.get('total_pages', 1)
-            for page in range(total_pages):
-                if f"page_{page}" not in st.session_state.all_tournaments:
-                    page_tournaments, _, _ = fetch_tournament_data(date_str, page, max_details)
-                    st.session_state.all_tournaments[f"page_{page}"] = page_tournaments
-                    # 進捗表示
-                    st.info(f"ページ {page + 1}/{total_pages} 取得完了（{len(page_tournaments)} 件）")
-                    py_time.sleep(3)  # サーバー負荷軽減
+            # 最初の1ページを取得して総ページ数を確認
+            first_page_tournaments, first_page_info, _ = fetch_tournament_data(date_str, 0, max_details)
+            total_pages = first_page_info.get('total_pages', 1)
             
-            # 再集計
-            all_collected = []
+            # 最初のページを保存
+            st.session_state.all_tournaments = {
+                "page_0": first_page_tournaments
+            }
+            pagination_info = first_page_info
+            tournaments = first_page_tournaments
+            
+            # 進捗バーの表示
+            progress_bar = st.progress(0)
+            for i, page in enumerate(range(1, total_pages)):  # 1から開始（0ページは既に取得済み）
+                page_tournaments, _, _ = fetch_tournament_data(date_str, page, max_details)
+                st.session_state.all_tournaments[f"page_{page}"] = page_tournaments
+                # 進捗表示
+                st.info(f"ページ {page + 1}/{total_pages} 取得完了（{len(page_tournaments)} 件）")
+                progress_bar.progress((i + 1) / (total_pages - 1))
+                py_time.sleep(3)  # サーバー負荷軽減
+            
+            # セッションに保存されているデータから全体を集計
             for page_data in st.session_state.all_tournaments.values():
                 all_collected.extend(page_data)
             
             st.success(f"すべてのページの取得完了！合計 {len(all_collected)} 件のトーナメントデータを収集しました。")
+    else:
+        # ボタンが押されていない場合は、セッションに保存されているデータを使用
+        for page_data in st.session_state.all_tournaments.values():
+            all_collected.extend(page_data)
     
     # ソートオプション
     sort_option = st.radio(
@@ -374,19 +322,20 @@ def main():
         if sort_option == "時間順":
             sorted_tournaments = sorted(all_collected, key=lambda x: x.get('start_time', '99:99'))
         else:  # 回収率順
-            # エントリー総額と保証金から回収率を計算
-            for t in all_collected:
-                entry_fee = t.get('entry_fee', 0)
-                entries = t.get('current_entries', 0)
-                guarantee = t.get('guarantee', 0)
-                
-                if guarantee > 0 and entry_fee * entries > 0:
-                    t['value_ratio'] = (guarantee / (entry_fee * entries)) * 100
+            # バリュー計算（保証賞金 ÷ エントリー総額）で100%超えるとバリュー有り
+            for tournament in sorted_tournaments:
+                if tournament['guarantee'] > 0:
+                    total_entry_amount = tournament['current_entries'] * tournament['entry_fee']
+                    if total_entry_amount > 0:  # ゼロ除算を防ぐ
+                        value_ratio = tournament['guarantee'] / total_entry_amount  # 計算式を反転
+                        tournament['value_ratio'] = value_ratio * 100  # パーセント表示にするため100倍
+                    else:
+                        tournament['value_ratio'] = None  # エントリーがない場合
                 else:
-                    t['value_ratio'] = 0
+                    tournament['value_ratio'] = None  # 保証がない場合
             
             # 回収率の高い順にソート
-            sorted_tournaments = sorted(all_collected, key=lambda x: x.get('value_ratio', 0), reverse=True)
+            sorted_tournaments = sorted(sorted_tournaments, key=lambda x: x.get('value_ratio', 0), reverse=True)
         
         # タブ作成
         tab1, tab2 = st.tabs(["通常トーナメント", "JOPTトーナメント"])
