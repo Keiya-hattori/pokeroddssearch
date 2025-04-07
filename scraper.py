@@ -245,11 +245,11 @@ class PokerfansScraper:
                 tournament_info['guarantee'] = guarantee
                 
                 # タイトルから取得できず、詳細取得数が上限未満の場合のみ詳細ページをチェック
-                if guarantee == 0 and (max_details_per_page == 0 or details_count < max_details_per_page):
-                    detail_info = self.get_tournament_detail(detail_url)
-                    tournament_info['guarantee'] = detail_info['guarantee']
-                    details_count += 1
-                    self._random_delay()  # 詳細ページアクセス後に待機
+                # if guarantee == 0 and (max_details_per_page == 0 or details_count < max_details_per_page):
+                #     detail_info = self.get_tournament_detail(detail_url)
+                #     tournament_info['guarantee'] = detail_info['guarantee']
+                #     details_count += 1
+                #     self._random_delay()  # 詳細ページアクセス後に待機
                 
                 tournaments.append(tournament_info)
                 
