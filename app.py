@@ -542,7 +542,7 @@ def main():
                     st.session_state.current_page += 1
                     st.rerun()
     else:
-        st.info("取得ボタンを押してトーナメント情報を取得してください。")
+        pass  # 何も表示しない
 
 if __name__ == "__main__":
     st.set_page_config(
