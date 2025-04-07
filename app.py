@@ -291,165 +291,90 @@ def main():
     # データ取得（キャッシュ対応）
     tournaments = None
     pagination_info = None
-    
-    # 全ページデータの集計を初期化
-    all_collected = []
-    
-    # 「すべてのページを取得（キャッシュを更新）」ボタン
-    if st.button("すべてのページを取得（キャッシュを更新）"):
-        # キャッシュをクリア
-        st.cache_data.clear()
-        
-        # 取得状態を保存するためのセッション変数を設定
-        st.session_state.is_fetching = True
-        st.session_state.fetch_progress = 0
-        st.session_state.fetch_total_pages = 0
-        st.session_state.fetch_current_page = 0
-        st.session_state.fetch_date = date_str
-        st.session_state.fetch_max_details = max_details
-        
-        # リダイレクトして取得処理を開始
-        st.rerun()
 
-    # 取得処理の継続（スマホでのセッション切れに対応）
-    if 'is_fetching' in st.session_state and st.session_state.is_fetching:
-        with st.spinner(f"データを取得中... 進捗: {st.session_state.fetch_progress}%"):
-            # 進捗バーの表示（常に表示）
-            progress_bar = st.progress(st.session_state.fetch_progress / 100)
+    # セッションステートにデータが存在するか確認
+    if 'last_tournaments' not in st.session_state:
+        st.session_state.last_tournaments = None
+        st.session_state.last_pagination_info = None
+
+    with st.spinner(f"データを取得中... (ページ {st.session_state.current_page + 1})"):
+        try:
+            # 強制更新、初回表示、またはページ変更のときキャッシュをクリア
+            if force_refresh:
+                st.cache_data.clear()
             
-            # 初回の場合、最初のページを取得
-            if st.session_state.fetch_total_pages == 0:
-                st.info("最初のページを取得中...")
-                
-                # 最初の1ページを取得して総ページ数を確認
-                first_page_tournaments, first_page_info, _ = fetch_tournament_data(
-                    st.session_state.fetch_date, 
-                    0, 
-                    st.session_state.fetch_max_details
-                )
-                total_pages = first_page_info.get('total_pages', 1)
-                
-                # 最初のページを保存
-                st.session_state.all_tournaments = {
-                    "page_0": first_page_tournaments
-                }
-                
-                # 状態を更新
-                st.session_state.fetch_total_pages = total_pages
-                st.session_state.fetch_current_page = 0  # バッチ処理用に0に初期化
-                st.session_state.fetch_progress = (1 / total_pages) * 100 if total_pages > 0 else 100
-                st.session_state.batch_progress = 0
-                st.session_state.batch_size = 3  # 一度に処理するページ数
-                
-                # 進捗情報を表示
-                st.info(f"ページ 1/{total_pages} 取得完了（{len(first_page_tournaments)} 件）")
-                progress_bar.progress(st.session_state.fetch_progress / 100)
-                
-                # 次のバッチへ進む前に一時停止
-                py_time.sleep(1)
-                st.rerun()
+            # データ取得
+            cache_key = f"{date_str}_{st.session_state.current_page}_{max_details}"
             
-            # バッチ処理（複数ページを並列取得）
-            elif st.session_state.fetch_current_page < st.session_state.fetch_total_pages - 1:
-                total_pages = st.session_state.fetch_total_pages
-                current_batch_start = st.session_state.fetch_current_page + 1  # 次のページから
-                batch_size = st.session_state.batch_size
-                current_batch_end = min(current_batch_start + batch_size, total_pages)
-                
-                # バッチ処理の進捗表示
-                batch_progress_bar = st.progress(st.session_state.batch_progress)
-                st.info(f"ページ {current_batch_start + 1}～{current_batch_end}/{total_pages} を並列取得中...")
-                
-                # 並列取得
-                batch_results = fetch_pages_parallel(
-                    st.session_state.fetch_date,
-                    current_batch_start,
-                    current_batch_end,
-                    st.session_state.fetch_max_details
-                )
-                
-                # 結果を保存
-                st.session_state.all_tournaments.update(batch_results)
-                
-                # 状態を更新
-                st.session_state.fetch_current_page = current_batch_end - 1
-                st.session_state.fetch_progress = (current_batch_end / total_pages) * 100
-                
-                # 進捗情報を表示
-                batch_tournaments_count = sum(len(tournaments) for tournaments in batch_results.values())
-                st.info(f"ページ {current_batch_start + 1}～{current_batch_end}/{total_pages} 取得完了（{batch_tournaments_count} 件）")
-                progress_bar.progress(st.session_state.fetch_progress / 100)
-                
-                # バッチの進捗をリセット
-                st.session_state.batch_progress = 0
-                batch_progress_bar.progress(0)
-                
-                # 次のバッチに進む前に一時停止（サーバー負荷軽減）
-                py_time.sleep(2)
-                st.rerun()
-            
-            # すべてのページの取得が完了
+            # セッションステートにキャッシュがあればそれを使用
+            if cache_key in st.session_state and not force_refresh and not page_changed:
+                tournaments, pagination_info, processing_time = st.session_state[cache_key]
             else:
-                # 全データを集計
-                all_collected = []
-                for page_data in st.session_state.all_tournaments.values():
-                    all_collected.extend(page_data)
-                
-                # 取得完了メッセージ
-                st.success(f"すべてのページの取得完了！合計 {len(all_collected)} 件のトーナメントデータを収集しました。")
-                
-                # 取得状態をリセット
-                st.session_state.is_fetching = False
-                st.session_state.fetch_progress = 100
-                progress_bar.progress(1.0)
-                
-                # 参加可否判定とJOPT分類
-                for t in all_collected:
-                    t['is_available'] = is_available(t.get('start_time'), t.get('end_time'))
-                    t['is_jopt'] = is_jopt_tournament(t.get('title', ''))
-                
-                # 選択されたソート順でソート
-                sort_option = st.radio(
-                    "並び順",
-                    ["時間順", "回収率順"],
-                    horizontal=True
+                # キャッシュがないか、強制更新かページ変更の場合は取得
+                tournaments, pagination_info, processing_time = fetch_tournament_data(
+                    date_str, 
+                    st.session_state.current_page, 
+                    max_details
                 )
-                
-                if sort_option == "時間順":
-                    sorted_tournaments = sorted(all_collected, key=lambda x: x.get('start_time', '99:99'))
-                else:  # 回収率順
-                    # バリュー計算（保証賞金 ÷ エントリー総額）で100%超えるとバリュー有り
-                    for tournament in all_collected:
-                        if tournament['guarantee'] > 0:
-                            total_entry_amount = tournament['current_entries'] * tournament['entry_fee']
-                            if total_entry_amount > 0:  # ゼロ除算を防ぐ
-                                value_ratio = tournament['guarantee'] / total_entry_amount  # 計算式を反転
-                                tournament['value_ratio'] = value_ratio * 100  # パーセント表示にするため100倍
-                            else:
-                                tournament['value_ratio'] = None  # エントリーがない場合
-                        else:
-                            tournament['value_ratio'] = None  # 保証がない場合
-                    
-                    # 回収率の高い順にソート
-                    sorted_tournaments = sorted(all_collected, key=lambda x: x.get('value_ratio', 0) if x.get('value_ratio') is not None else 0, reverse=True)
-                
-                # タブ作成
-                tab1, tab2 = st.tabs(["通常トーナメント", "JOPTトーナメント"])
-                
-                # 通常トーナメント
-                with tab1:
-                    normal_tournaments = [t for t in sorted_tournaments if not t.get('is_jopt', False)]
-                    st.success(f"通常トーナメント: 合計{len(normal_tournaments)}件")
-                    display_tournaments(normal_tournaments)
-                
-                # JOPTトーナメント
-                with tab2:
-                    jopt_tournaments = [t for t in sorted_tournaments if t.get('is_jopt', False)]
-                    st.success(f"JOPTトーナメント: 合計{len(jopt_tournaments)}件")
-                    display_tournaments(jopt_tournaments)
+                # セッションにキャッシュ
+                st.session_state[cache_key] = (tournaments, pagination_info, processing_time)
+                # 最後に取得したデータを保存
+                st.session_state.last_tournaments = tournaments
+                st.session_state.last_pagination_info = pagination_info
+            
+            # 全体表示用にデータを蓄積
+            if tournaments:
+                page_key = f"page_{st.session_state.current_page}"
+                st.session_state.all_tournaments[page_key] = tournaments
+                # 最後に取得したデータを保存
+                st.session_state.last_tournaments = tournaments
+                st.session_state.last_pagination_info = pagination_info
+            
+        except Exception as e:
+            st.error(f"データの取得に失敗しました: {str(e)}")
+            st.error("しばらく待ってから再試行してください。")
+            # エラー時は前回のデータを使用
+            tournaments = st.session_state.last_tournaments
+            pagination_info = st.session_state.last_pagination_info
 
-    # 通常の表示（現在のページのみ）
-    elif tournaments:
+    # 以下の部分を修正
+    if tournaments:
+        current_time = datetime.now(JST).strftime('%H:%M')
+        st.caption(f"現在時刻: {current_time}")
+        
+        # トーナメントをJOPTと通常に分類
+        jopt_tournaments = []
+        normal_tournaments = []
+        
+        for t in tournaments:
+            # 参加可否を判定
+            t['is_available'] = is_available(t.get('start_time'), t.get('end_time'))
+            
+            # JOPTかどうかチェック
+            if is_jopt_tournament(t.get('title', '')):
+                jopt_tournaments.append(t)
+            else:
+                normal_tournaments.append(t)
+        
+        # タブ作成
+        tab1, tab2 = st.tabs(["通常トーナメント", "JOPTトーナメント"])
+        
+        # 通常トーナメント
+        with tab1:
+            normal_tournaments = [t for t in tournaments if not t.get('is_jopt', False)]
+            st.success(f"通常トーナメント: 合計{len(normal_tournaments)}件")
+            display_tournaments(normal_tournaments)
+        
+        # JOPTトーナメント
+        with tab2:
+            jopt_tournaments = [t for t in tournaments if t.get('is_jopt', False)]
+            st.success(f"JOPTトーナメント: 合計{len(jopt_tournaments)}件")
+            display_tournaments(jopt_tournaments)
+
+    elif st.session_state.last_tournaments:
+        # 前回取得したデータを表示
+        tournaments = st.session_state.last_tournaments
+        pagination_info = st.session_state.last_pagination_info
         current_time = datetime.now(JST).strftime('%H:%M')
         st.caption(f"現在時刻: {current_time}")
         
@@ -542,7 +467,7 @@ def main():
                     st.session_state.current_page += 1
                     st.rerun()
     else:
-        pass  # 何も表示しない
+        st.info("トーナメント情報を取得するには、更新ボタンを押してください。")
 
 if __name__ == "__main__":
     st.set_page_config(
